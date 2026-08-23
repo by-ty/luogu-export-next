@@ -214,7 +214,7 @@ luogu-export -L --pid-range P1000-P1999 --tag "动态规划 DP" --difficulty 3-5
 
 ## 许可证
 
-本项目（**luogu-export-next**）以 **GNU Lesser General Public License v3.0 或（按你的选择）任何更新版本**（SPDX: `LGPL-3.0-or-later`）授权发布，版权 © 2026 **by-ty**，完整许可文本见 [LICENSE](LICENSE)。
+本项目（**luogu-export-next**）以 **GNU Lesser General Public License v3.0 或任何更新版本**（SPDX: `LGPL-3.0-or-later`）授权发布，版权 © 2026 by-ty，完整许可文本见 [LICENSE](LICENSE)。
 
 本项目派生自以 MIT 协议发布的 [luogu-export](https://github.com/sacharei/luogu-export)（Copyright © 2026 sacharei）。按 MIT 协议要求，原版权与许可声明完整保留于 LICENSE 文件「Original MIT License」一节。
 
