@@ -2343,7 +2343,11 @@ bool has_unclosed_paren_or_bracket(const std::string &s)
     return paren > 0 || brack > 0;
 }
 
-// 表格：rows[0] 表头，rows[1] 对齐行，其余为内容行
+// 表格：rows[0] 表头，rows[1] 对齐行，其余为内容行。
+// 支持洛谷表格合并语法：单元格内容恰为 "^" 时向上合并单元格（行合并），
+// 恰为 "<" 时向左合并单元格（列合并）；合并标记必须是单元格内唯一的纯文本内容。
+// 合并解析保证每个合并区域都是矩形（\multicolumn/\multirow 可表达），
+// 无法表达的交叉/ L 形合并会安全退化为空单元格，保证输出可编译。
 void emit_table(const std::vector<std::string> &rows, std::string &out)
 {
     auto split_cells = [](const std::string &row) {
@@ -2374,44 +2378,227 @@ void emit_table(const std::vector<std::string> &rows, std::string &out)
     };
 
     const std::vector<std::string> align_row = split_cells(rows[1]);
+    const size_t col_count = align_row.size();
+    if (col_count == 0)
+        return; // 防御：无列时不再输出（正常数据至少 1 列）
+
     std::string spec = "|";
+    std::vector<char> col_types;
+    col_types.reserve(col_count);
     for (const auto &a : align_row)
     {
         const std::string t = trim(a);
+        char type;
         if (t.size() >= 3 && t.front() == ':' && t.back() == ':')
-            spec += "c|";
+            type = 'c';
         else if (!t.empty() && t.front() == ':')
-            spec += "l|";
+            type = 'l';
         else if (!t.empty() && t.back() == ':')
-            spec += "r|";
+            type = 'r';
         else
-            spec += "l|";
+            type = 'l';
+        spec += type;
+        spec += '|';
+        col_types.push_back(type);
     }
 
-    auto emit_row = [&](const std::vector<std::string> &cells) {
-        for (size_t k = 0; k < cells.size(); ++k)
-        {
-            if (k)
-                out += " & ";
-            const std::string cell = trim(cells[k]);
-            if (cell == "^") // 表格合并标记，暂时忽略
-                continue;
-            out += inline_to_latex(cell);
-        }
-        out += " \\\\\n\\hline\n";
-    };
-
-    out += "\\begin{tabular}{" + spec + "}\n\\hline\n";
-    const size_t col_count = align_row.size();
-    auto bounded = [&](const std::vector<std::string> &cells) {
+    // 所有行（表头 + 内容行）统一归一化到 col_count 列
+    std::vector<std::vector<std::string>> grid;
+    grid.reserve(rows.size() - 1);
+    auto add_row = [&](const std::vector<std::string> &cells) {
         std::vector<std::string> v = cells;
         if (v.size() > col_count)
             v.resize(col_count);
-        return v;
+        while (v.size() < col_count)
+            v.push_back("");
+        grid.push_back(std::move(v));
     };
-    emit_row(bounded(split_cells(rows[0])));
+    add_row(split_cells(rows[0]));
     for (size_t r = 2; r < rows.size(); ++r)
-        emit_row(bounded(split_cells(rows[r])));
+        add_row(split_cells(rows[r]));
+    if (grid.empty())
+        return; // 防御：没有任何行时不输出
+    const size_t row_count = grid.size();
+
+    // ---- 合并解析 ----
+    // vtop[r][c]：单元格所属纵向合并的起始行；-1 表示不属于任何纵向合并
+    // vend[r][c]：纵向合并的结束行（仅起始行单元格有效）
+    // hsrc[r][c]：单元格所属横向合并的起始列；-1 表示不属于任何横向合并
+    // hend[r][c]：横向合并的结束列（仅起始列单元格有效）
+    std::vector<std::vector<long>> vtop(row_count, std::vector<long>(col_count, -1));
+    std::vector<std::vector<long>> vend(row_count, std::vector<long>(col_count, -1));
+    std::vector<std::vector<long>> hsrc(row_count, std::vector<long>(col_count, -1));
+    std::vector<std::vector<long>> hend(row_count, std::vector<long>(col_count, -1));
+
+    // 1) 纵向合并（^ 向上合并）：与上方单元格合并；上方单元格本身是 ^ 时
+    //    继续向上（链式）。上方是 < 或合并失败的 ^ 时无法表达，按空单元格处理
+    for (size_t c = 0; c < col_count; ++c)
+    {
+        for (size_t r = 1; r < row_count; ++r)
+        {
+            if (trim(grid[r][c]) != "^")
+                continue;
+            long top = -1;
+            if (vtop[r - 1][c] >= 0) // 上方是合并成功的 ^（链式）
+                top = vtop[r - 1][c];
+            else if (trim(grid[r - 1][c]) != "^" && trim(grid[r - 1][c]) != "<")
+                top = static_cast<long>(r - 1); // 上方是普通内容单元格
+            if (top < 0)
+                continue; // 无法合并：按空单元格处理
+            vtop[r][c] = top;
+            vend[top][c] = static_cast<long>(r);
+        }
+    }
+
+    // 2) 横向合并（< 向左合并）：与左侧单元格合并；左侧是 < 时继续向左（链式）。
+    //    左侧是 ^ 或合并失败的 < 时无法表达，按空单元格处理；
+    //    左侧内容单元格带有向下延伸的纵向合并时，仅当合并区域仍是矩形
+    //    （下方对应位置全是 ^ / < 标记）才合并，否则退化为空单元格
+    for (size_t r = 0; r < row_count; ++r)
+    {
+        for (size_t c = 1; c < col_count; ++c)
+        {
+            if (trim(grid[r][c]) != "<")
+                continue;
+            long src = -1;
+            const std::string left = trim(grid[r][c - 1]);
+            if (left == "<")
+                src = hsrc[r][c - 1]; // 链式：接左侧 < 的起点（失败则为 -1）
+            else if (left != "^")
+                src = static_cast<long>(c - 1); // 左侧是内容单元格
+            if (src < 0 || src >= static_cast<long>(col_count))
+                continue; // 无法合并：按空单元格处理
+            // 左侧内容单元格下方存在纵向合并时，检查矩形区域是否全是合并标记
+            if (vend[r][static_cast<size_t>(src)] > static_cast<long>(r))
+            {
+                bool rect_ok = true;
+                const long vbottom = vend[r][static_cast<size_t>(src)];
+                for (long rr = static_cast<long>(r) + 1;
+                     rr <= vbottom && rect_ok; ++rr)
+                {
+                    for (long cc = src; cc <= static_cast<long>(c); ++cc)
+                    {
+                        const std::string t =
+                            trim(grid[static_cast<size_t>(rr)][static_cast<size_t>(cc)]);
+                        if (t != "^" && t != "<")
+                        {
+                            rect_ok = false;
+                            break;
+                        }
+                    }
+                }
+                if (!rect_ok)
+                    continue;
+            }
+            hsrc[r][c] = src;
+            hend[r][static_cast<size_t>(src)] = static_cast<long>(c);
+        }
+    }
+
+    // 3) 标记“组合矩形”（\multicolumn 与 \multirow 叠加）覆盖的单元格：
+    //    其内部的横向分隔线也必须跳过，否则会穿过合并单元格
+    std::vector<std::vector<bool>> in_rect(row_count,
+                                           std::vector<bool>(col_count, false));
+    for (size_t r0 = 0; r0 < row_count; ++r0)
+    {
+        for (size_t c0 = 0; c0 < col_count; ++c0)
+        {
+            if (vend[r0][c0] <= static_cast<long>(r0) ||
+                hend[r0][c0] <= static_cast<long>(c0))
+                continue;
+            for (long rr = static_cast<long>(r0); rr <= vend[r0][c0]; ++rr)
+                for (long cc = static_cast<long>(c0); cc <= hend[r0][c0]; ++cc)
+                    in_rect[static_cast<size_t>(rr)][static_cast<size_t>(cc)] = true;
+        }
+    }
+
+    // 行 r 之后、列 c 处的横向分隔线是否穿过合并单元格内部
+    auto boundary_blocked = [&](size_t r, size_t c) -> bool {
+        const std::string cell = trim(grid[r][c]);
+        // 纵向合并跨过该边界继续向下
+        const long t = (cell == "^" && vtop[r][c] >= 0)
+                           ? vtop[r][c]
+                           : static_cast<long>(r);
+        if (vend[static_cast<size_t>(t)][c] > static_cast<long>(r))
+            return true;
+        // 组合矩形：该边界两侧的行都在矩形内
+        return in_rect[r][c] && r + 1 < row_count && in_rect[r + 1][c];
+    };
+
+    // ---- 渲染 ----
+    out += "\\begin{tabular}{" + spec + "}\n\\hline\n";
+    for (size_t r = 0; r < row_count; ++r)
+    {
+        for (size_t c = 0; c < col_count; ++c)
+        {
+            const std::string cell = trim(grid[r][c]);
+            // 横向合并的内部单元格：由起始列的 \multicolumn 占用，不输出
+            if (cell == "<" && hsrc[r][c] >= 0)
+                continue;
+            if (c > 0)
+                out += " & ";
+            if (cell == "^" || cell == "<")
+                continue; // 纵向合并内部 / 合并失败：空单元格
+            size_t vlen = 1;
+            if (vend[r][c] >= 0)
+                vlen = static_cast<size_t>(vend[r][c]) - r + 1;
+            size_t hlen = 1;
+            if (hend[r][c] >= 0)
+                hlen = static_cast<size_t>(hend[r][c]) - c + 1;
+            std::string content = inline_to_latex(cell);
+            if (vlen > 1)
+                content = "\\multirow{" + std::to_string(vlen) + "}{*}{" +
+                          content + "}";
+            if (hlen > 1)
+            {
+                // \multicolumn 的对齐规格只允许一个列类型：取被合并范围内
+                // 第一列的对齐方式；保留首列左侧竖线（表格首列时）与合并区域
+                // 右侧的竖线，列间竖线按 LaTeX 惯例省略
+                std::string mspec;
+                if (c == 0)
+                    mspec += '|';
+                mspec += col_types[c];
+                mspec += '|';
+                content = "\\multicolumn{" + std::to_string(hlen) + "}{" +
+                          mspec + "}{" + content + "}";
+            }
+            out += content;
+        }
+
+        // 行分隔线：跳过合并单元格内部（合并单元格不应被横线穿过）。
+        // 无合并的表格保持原来的 \hline 输出
+        bool any_blocked = false;
+        for (size_t c = 0; c < col_count && !any_blocked; ++c)
+        {
+            if (boundary_blocked(r, c))
+                any_blocked = true;
+        }
+        if (!any_blocked)
+        {
+            out += " \\\\\n\\hline\n";
+        }
+        else
+        {
+            out += " \\\\\n";
+            size_t c = 0;
+            while (c < col_count)
+            {
+                if (boundary_blocked(r, c))
+                {
+                    ++c;
+                    continue;
+                }
+                size_t seg_end = c;
+                while (seg_end + 1 < col_count &&
+                       !boundary_blocked(r, seg_end + 1))
+                    ++seg_end;
+                out += "\\cline{" + std::to_string(c + 1) + "-" +
+                       std::to_string(seg_end + 1) + "}";
+                c = seg_end + 1;
+            }
+            out += "\n";
+        }
+    }
     out += "\\end{tabular}\n\n";
 }
 
@@ -3189,7 +3376,9 @@ bool latex::export_latex(const luogu::ExportFilter &filter,
         return false;
     }
 
-    std::fputs("\\documentclass{book}\n", out);
+    // openany：章节可在任意页开始，避免封面后的空页（book 默认章节
+    // 从奇数页开始，\maketitle 之后紧跟 \chapter* 会留出一张空白页）
+    std::fputs("\\documentclass[openany]{book}\n", out);
     std::fputs("\\usepackage[UTF8]{ctex}\n", out);
     std::fputs("\\usepackage{graphicx}\n", out);
     std::fputs("\\usepackage{titlesec}\n", out);
@@ -3209,6 +3398,8 @@ bool latex::export_latex(const luogu::ExportFilter &filter,
     std::fputs("\\usepackage{cancel}\n", out);
     std::fputs("\\usepackage{geometry}\n", out);
     std::fputs("\\usepackage{tabularx}\n", out);
+    // 表格合并（洛谷的 ^ 向上合并 / < 向左合并）需要 \multirow
+    std::fputs("\\usepackage{multirow}\n", out);
     std::fputs("\\geometry{margin=2cm}\n", out);
         // 去掉所有章节序号（\section 等）：目录和正文都不显示数字
     std::fputs("\\setcounter{secnumdepth}{-1}\n", out);
@@ -3527,28 +3718,23 @@ bool latex::export_latex(const luogu::ExportFilter &filter,
         toc_close = "}";
     }
 
-    if (!opt.toc_backlinks)
-    {
-        // 默认：\tableofcontents（目录条目是否带超链接由 hyperref 的
-        // linktoc 选项控制，对应 --no-toc-links）
-        std::fputs((toc_open + "\n\\tableofcontents\n" + toc_close + "\n").c_str(), out);
-    }
-    else
-    {
-        // --toc-backlinks：页眉页码需要跳回目录页。把 \tableofcontents 拆成
-        // “章标题 + \@starttoc”，并在目录标题正下方放置锚点 \label{luogotoc}，
-        // 点击页眉页码即跳到目录页顶端；\pdfbookmark 保持 PDF 书签中的
-        // “目录”项与 \tableofcontents 行为一致。
-        std::fputs((toc_open + "\n").c_str(), out);
-        std::fputs("\\pdfbookmark[0]{\\contentsname}{toc}\n", out);
-        std::fputs("\\chapter*{\\contentsname}\n", out);
-        std::fputs("\\phantomsection\n", out);
-        std::fputs("\\label{luogotoc}\n", out);
-        std::fputs("\\makeatletter\n", out);
-        std::fputs("\\@starttoc{toc}\n", out);
-        std::fputs("\\makeatother\n", out);
-        std::fputs((toc_close + "\n").c_str(), out);
-    }
+    // 目录统一写成“章标题 + \@starttoc”（与 \tableofcontents 等价，
+    // 目录条目是否带超链接由 hyperref 的 linktoc 选项控制，对应
+    // --no-toc-links），并在目录标题处放置：
+    // - \hypertarget{luogotoc}：页眉页码（--toc-backlinks）跳回目录页的
+    //   目标锚点。\hypertarget 直接生成命名目标，不依赖 .aux 中的 label
+    //   记录，点击即可跳到目录页顶端；
+    // - \pdfbookmark：PDF 书签中始终保留“目录”条目（book 类经 ctex 的
+    //   \tableofcontents 不会自动写目录书签），与题目的 \section 自动生成
+    //   的书签并存，两种导出模式（有无 --toc-backlinks）行为一致。
+    std::fputs((toc_open + "\n").c_str(), out);
+    std::fputs("\\chapter*{\\contentsname}\n", out);
+    std::fputs("\\hypertarget{luogotoc}{}\n", out);
+    std::fputs("\\pdfbookmark[0]{\\contentsname}{toc}\n", out);
+    std::fputs("\\makeatletter\n", out);
+    std::fputs("\\@starttoc{toc}\n", out);
+    std::fputs("\\makeatother\n", out);
+    std::fputs((toc_close + "\n").c_str(), out);
     std::fputs("\\newpage\n", out);
 
     std::fputs("\n\n", out);

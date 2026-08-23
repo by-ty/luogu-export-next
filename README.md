@@ -11,6 +11,8 @@
   - 按**标签**筛选（多个标签取「且」，即题目必须同时包含所有标签）；
   - 按**难度**筛选（支持单个数字 `0-8` 或闭区间 `1-4`，多个取「或」）；
   - 按**题目类型**筛选（`B` 基础题 / `P` 普通题）；
+  - 按**题号**筛选（`--pid`，多个取「或」；先在题目列表缓存中校验题号是否存在）；
+  - 按**题号范围**筛选（`--pid-range <题号>-<题号>`，闭区间、两端点均包含；先校验两端点存在于缓存且属于同一题库，可与标签/难度/类型条件组合）；
   - 按**题面语言**筛选（`zh-CN` / `en`，英文缺失时自动回退中文）。
 - **导出 Markdown**（`-M`）：每题一个章节，包含难度、标签、时空限制、题目背景、题目描述、输入/输出格式、样例、说明/提示；一级标题可用 `--set-cover-title` 自定义。
 - **导出 LaTeX**（`-L`）：生成可直接用 `xelatex` 编译的完整 `.tex` 文档（含文档类、宏包、目录、页眉、标签徽章样式等），并内置大量针对洛谷题面公式/格式「坑」的自动修复。
@@ -59,6 +61,13 @@ Options:
       --tag <name|ID>...  Filter by tag (a problem must contain all given tags)
       --difficulty <spec> Filter by difficulty: numbers 0-8, ranges like 1-4
       --type <B|P>        Filter by problem type (repeatable; empty means all types)
+      --pid <pid>...      Filter by problem id (repeatable or space separated).
+                          Cannot be combined with --tag / --difficulty / --type;
+                          every id must exist in the problem list cache
+      --pid-range <a>-<b> Filter by inclusive problem id range (repeatable or space
+                          separated). Both endpoints must exist in the cache and
+                          belong to the same problem set (e.g. P1001-P1010).
+                          May be combined with --tag / --difficulty / --type
       --lang <zh-CN|en>   Problem statement language (default: zh-CN)
       --show <NN>         Show flags for -M only: first bit = difficulty, second bit = tags
       --output <file>     Output file (default: problems.md / problems.tex)
@@ -118,6 +127,13 @@ luogu-export -L --no-toc-links --toc-backlinks \
 
 # 7. Markdown 导出时自定义一级标题
 luogu-export -M --set-cover-title "洛谷竞赛题册（全量）"
+
+# 8. 按题号导出指定题目（可重复 --pid 或空格分隔；题号必须存在于缓存）
+luogu-export -L --pid P1001 P1002 --pid P2000 --output 指定题目.tex
+
+# 9. 按题号范围导出（闭区间；可与标签/难度/类型组合）
+luogu-export -L --pid-range P1000-P1999 --tag "动态规划 DP" --difficulty 3-5 \
+    --output 区间题册.tex
 ```
 
 ### 参数说明
@@ -129,8 +145,10 @@ luogu-export -M --set-cover-title "洛谷竞赛题册（全量）"
 | `-L, --latex` | 筛选并导出 LaTeX（默认输出 `problems.tex`） |
 | `--tags` | 按官方分类打印标签 ID 对照表（可与 `-h` 组合） |
 | `--tag <name\|ID>...` | 按标签筛选；多个值可用空格分隔或重复 `--tag`，题目须包含全部标签；引号整体恰好等于已知标签名（如 `"NOIP 普及组"`）时按一个标签处理 |
-| `--difficulty <spec>` | 按难度筛选；支持 `0-8`、区间 `1-4`，多个用空格分隔或重复传入（任一命中即可） |
+| `--difficulty <spec>` | 按难度（`0-8`）筛选；支持区间写法（如 `1-4`），多组值可用空格分隔或重复 `--difficulty` |
 | `--type <B\|P>` | 按题目类型筛选（可重复，空表示全部类型） |
+| `--pid <pid>...` | 按题号精确筛选；多个值可用空格分隔或重复 `--pid`。不能与 `--tag`、`--difficulty`、`--type` 同时使用 |
+| `--pid-range <a>-<b>` | 按题号闭区间筛选；多组值可用空格分隔或重复 `--pid-range`。一组范围两端必须为同一题库（如都为 `P` 题库或都为 `B` 题库，多组范围间可不为同一题库）。可与 `--tag`、`--difficulty`、`--type` 同时使用 |
 | `--lang <zh-CN\|en>` | 题面语言（默认 `zh-CN`；`en` 缺失时回退中文） |
 | `--show <NN>` | 仅 `-M` 有效：第 1 位=是否显示难度，第 2 位=是否显示标签（默认 `11`）；隐藏标签仅隐藏「算法」类标签，其他类型始终显示 |
 | `--output <file>` | 输出文件路径（默认 `problems.md` / `problems.tex`） |
@@ -177,8 +195,8 @@ luogu-export -M --set-cover-title "洛谷竞赛题册（全量）"
 
 ## 导出格式说明
 
-- **Markdown**：文件头包含题目总数与筛选条件；每道题以 `---` 分隔，`# <题号> <标题>` 为章节，随后是难度、标签、时空限制，以及各题面小节与样例代码块。一级标题可用 `--set-cover-title` 自定义。
-- **LaTeX**：生成完整可编译文档（`\documentclass{book}`），带目录、页眉页脚、章节无序号（`secnumdepth=-1`），并内置多种自定义命令与颜色别名以兼容洛谷题面。图片仅在缓存中存在时通过 `\IfFileExists` 引用，缺失图片不会导致编译失败；GIF/WebP/SVG/BMP/ICO 等 xelatex 无法加载的格式会被跳过，视频（Bilibili 等）只输出链接（`--no-bilibili-link` 时输出为普通文本）。目录超链接由 hyperref 的 `linktoc` 选项控制（`--no-toc-links` 关闭）；`--toc-backlinks` 会在目录标题下方放置锚点，并把页眉页码改为跳回该锚点的超链接；`--set-font-*` 参数通过 `fontspec`/`ctex` 的 `\setmainfont`、`\setCJKmainfont`、`\setmonofont`、`\newfontfamily`、`\newCJKfontfamily` 实现，且仅在传入参数时写入对应命令，不影响默认排版。标签徽章字体默认按操作系统选择（Windows/macOS 思源黑体 Noto Sans CJK SC、Linux 文泉驿微米黑），并通过 `\IfFontExistsTF` 在字体未安装时回退到正文 CJK 字体。导出后请使用 `latexmk --xelatex <输出文件名>.tex` 编译。
+- **Markdown**：文件头包含题目总数与筛选条件；每道题以 `---` 分隔，`# <题号> <标题>` 为章节，随后是难度、标签、时空限制，以及各题面小节与样例代码块。一级标题可用 `--set-cover-title` 自定义；
+- **LaTeX**：生成完整可编译文档（`\documentclass[openany]{book}`，封面后不再出现空白页），带目录、页眉页脚、章节无序号（`secnumdepth=-1`），并内置多种自定义命令与颜色别名以兼容洛谷题面。洛谷的**表格合并**语法（单元格内容恰为 `^` 时向上合并、恰为 `<` 时向左合并）会转换为 `\multirow` / `\multicolumn`，合并单元格内部不画分隔线；无法用矩形表达的交叉合并会安全退化为空单元格。图片仅在缓存中存在时通过 `\IfFileExists` 引用，缺失图片不会导致编译失败；GIF/WebP/SVG/BMP/ICO 等 xelatex 无法加载的格式会被跳过，视频（Bilibili 等）只输出链接（`--no-bilibili-link` 时输出为普通文本）。目录超链接由 hyperref 的 `linktoc` 选项控制（`--no-toc-links` 关闭）；PDF 书签中始终包含「目录」条目与每题一个条目（两种导出模式一致）；`--toc-backlinks` 会在目录标题处放置 `\hypertarget{luogotoc}` 锚点，并把页眉页码改为跳回该锚点的超链接（不依赖 `.aux` 中的 label 记录，点击即可跳回目录页）；`--set-font-*` 参数通过 `fontspec`/`ctex` 的 `\setmainfont`、`\setCJKmainfont`、`\setmonofont`、`\newfontfamily`、`\newCJKfontfamily` 实现，且仅在传入参数时写入对应命令，不影响默认排版。标签徽章字体默认按操作系统选择（Windows/macOS 思源黑体 Noto Sans CJK SC、Linux 文泉驿微米黑），并通过 `\IfFontExistsTF` 在字体未安装时回退到正文 CJK 字体。导出后请使用 `latexmk --xelatex <输出文件名>.tex` 编译。
 
 ## 参数错误处理
 
@@ -188,6 +206,11 @@ luogu-export -M --set-cover-title "洛谷竞赛题册（全量）"
 - 字体类参数被识别为字体文件地址，但对应文件不存在；
 - 选择了 `-M`（Markdown）导出，却使用了仅 `-L`（LaTeX）支持的设置参数；
 - 出现了程序没有的未知参数（提示使用 `-h, --help` 查看帮助）。
+
+## 待添加功能
+- [ ] 导出 LaTex 文档时可选是否带题目难度和标签；
+- [ ] 导出相应题解；
+- [ ] 简易命令行交互程序，通过交互设置下载参数。
 
 ## 许可证
 

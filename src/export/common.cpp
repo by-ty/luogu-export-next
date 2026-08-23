@@ -50,6 +50,13 @@ std::string to_lower_ascii(std::string s)
     return s;
 }
 
+std::string to_upper_ascii(std::string s)
+{
+    for (auto &c : s)
+        c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+    return s;
+}
+
 std::string join_strings(const std::vector<std::string> &v, const std::string &sep)
 {
     std::string out;
@@ -566,12 +573,89 @@ bool raw_tags_match(std::string_view line,
     return false;
 }
 
-// 综合预筛：难度、类型、标签任一条件在原始文本上就确定不满足时返回 false。
+// ---- --pid / --pid-range 相关辅助 -------------------------------------
+
+// 已解析的 --pid-range 区间（端点已规范化为大写，且两端属于同一题库）
+struct PidRange
+{
+    std::string lo_prefix;  // 题库前缀（如 "P" / "B"），两端相同
+    unsigned long long lo_num = 0;
+    std::string lo_suffix;
+    std::string hi_prefix;  // 恒等于 lo_prefix（仅用于校验时暂存）
+    unsigned long long hi_num = 0;
+    std::string hi_suffix;
+};
+
+// 从一行原始 JSON 文本中提取第一个 "pid" 字符串值（不解码转义；
+// 值含反斜杠或格式异常时保守返回 false，交由完整 JSON 解析处理）。
+bool raw_pid_value(std::string_view line, std::string &out)
+{
+    static constexpr std::string_view kKey = "\"pid\"";
+    size_t pos = 0;
+    while ((pos = line.find(kKey, pos)) != std::string_view::npos)
+    {
+        size_t q = pos + kKey.size();
+        while (q < line.size() && is_json_ws(line[q]))
+            ++q;
+        if (q >= line.size() || line[q] != ':')
+        {
+            pos = q;
+            continue;
+        }
+        ++q;
+        while (q < line.size() && is_json_ws(line[q]))
+            ++q;
+        if (q >= line.size() || line[q] != '"')
+        {
+            pos = q;
+            continue;
+        }
+        ++q;
+        const size_t value_start = q;
+        while (q < line.size() && line[q] != '"')
+        {
+            if (line[q] == '\\')
+                return false; // 含转义：无法可靠比较
+            ++q;
+        }
+        if (q >= line.size())
+            return false; // 字符串未闭合
+        out.assign(line.substr(value_start, q - value_start));
+        return true;
+    }
+    return false;
+}
+
+// 题号（已大写）是否命中 --pid 集合或任一 --pid-range 区间
+bool pid_matches(const std::string &pid,
+                 const std::set<std::string> &pids,
+                 const std::vector<PidRange> &ranges)
+{
+    if (pids.count(pid) != 0)
+        return true;
+    std::string prefix, suffix;
+    unsigned long long num = 0;
+    if (!luogu::parse_pid_parts(pid, prefix, num, suffix))
+        return false;
+    for (const auto &r : ranges)
+    {
+        if (prefix != r.lo_prefix)
+            continue;
+        if (luogu::compare_pid_parts(num, suffix, r.lo_num, r.lo_suffix) >= 0 &&
+            luogu::compare_pid_parts(num, suffix, r.hi_num, r.hi_suffix) <= 0)
+            return true;
+    }
+    return false;
+}
+
+// 综合预筛：难度、类型、标签、题号任一条件在原始文本上就确定不满足时返回 false。
 bool raw_may_match(std::string_view line,
                    const std::vector<int> &difficulties,
                    const std::vector<std::string> &filter_tags,
                    const std::vector<long> &filter_tag_ids,
-                   const std::vector<std::string> &types)
+                   const std::vector<std::string> &types,
+                   const std::set<std::string> &pids,
+                   const std::vector<PidRange> &pid_ranges)
 {
     if (!difficulties.empty())
     {
@@ -596,6 +680,15 @@ bool raw_may_match(std::string_view line,
 
     if (!filter_tags.empty() && !raw_tags_match(line, filter_tags, filter_tag_ids))
         return false;
+
+    if (!pids.empty() || !pid_ranges.empty())
+    {
+        std::string raw_pid;
+        if (!raw_pid_value(line, raw_pid))
+            return true; // 无法可靠提取：保守交给完整解析
+        if (!pid_matches(to_upper_ascii(raw_pid), pids, pid_ranges))
+            return false;
+    }
 
     return true;
 }
@@ -646,6 +739,39 @@ bool luogu::select_problems(const ExportFilter &filter,
     if (resolved_tags)
         *resolved_tags = filter_tags;
 
+    // 2.5 --pid / --pid-range 的题号规范化与区间解析
+    // pids_set：大写题号集合（--pid，精确匹配）；
+    // wanted_pids：需要存在性检查的题号（--pid 值与 --pid-range 两端点）；
+    // pid_ranges：已解析的闭区间（多组取“或”）
+    std::set<std::string> pids_set;
+    std::set<std::string> wanted_pids;
+    std::vector<PidRange> pid_ranges;
+    for (const auto &pid : filter.pids)
+    {
+        pids_set.insert(to_upper_ascii(pid));
+        wanted_pids.insert(to_upper_ascii(pid));
+    }
+    for (const auto &r : filter.pid_ranges)
+    {
+        const std::string lo = to_upper_ascii(r.first);
+        const std::string hi = to_upper_ascii(r.second);
+        PidRange pr;
+        if (!luogu::parse_pid_parts(lo, pr.lo_prefix, pr.lo_num, pr.lo_suffix) ||
+            !luogu::parse_pid_parts(hi, pr.hi_prefix, pr.hi_num, pr.hi_suffix) ||
+            pr.lo_prefix != pr.hi_prefix ||
+            luogu::compare_pid_parts(pr.lo_num, pr.lo_suffix,
+                                     pr.hi_num, pr.hi_suffix) > 0)
+        {
+            error = "参数 --pid-range 的题号范围 '" + r.first + "-" + r.second +
+                    "' 无效（两端应为同一题库的合法题号，且左端点不超过右端点，"
+                    "如 P1001-P1010）";
+            return false;
+        }
+        pid_ranges.push_back(pr);
+        wanted_pids.insert(lo);
+        wanted_pids.insert(hi);
+    }
+
     // 3. 打开题目缓存
     std::filesystem::path ndjson_path = crawler::get_cache_dir() / "latest.ndjson";
     FILE *in = luogu::compat::fopen(ndjson_path, "rb");
@@ -653,6 +779,47 @@ bool luogu::select_problems(const ExportFilter &filter,
     {
         error = "找不到题目缓存 '" + luogu::compat::path_to_utf8(ndjson_path) + "'，请先运行 -U 更新缓存";
         return false;
+    }
+
+    // 3.5 --pid / --pid-range：先在题目列表缓存中查找题号是否存在，
+    //     不存在时指出具体题号并停止执行（原始文本扫描，避免整份缓存做 JSON 解析）
+    if (!wanted_pids.empty())
+    {
+        std::set<std::string> found;
+        if (std::fseek(in, 0, SEEK_SET) == 0)
+        {
+            std::string scan_line;
+            while (luogu::compat::read_line(in, scan_line) >= 0)
+            {
+                if (scan_line.empty())
+                    continue;
+                std::string pid;
+                if (raw_pid_value(std::string_view(scan_line), pid))
+                {
+                    const std::string up = to_upper_ascii(pid);
+                    if (wanted_pids.count(up))
+                        found.insert(up);
+                }
+            }
+        }
+        std::vector<std::string> missing;
+        for (const auto &w : wanted_pids)
+            if (!found.count(w))
+                missing.push_back(w);
+        if (!missing.empty())
+        {
+            std::fclose(in);
+            error = "题目列表缓存中不存在题号 " + join_strings(missing, "、") +
+                    "（无此题号的题目）；请检查题号拼写，或先运行 -U 更新缓存";
+            return false;
+        }
+        // 存在性检查扫描到文件末尾，回到开头供筛选使用
+        if (std::fseek(in, 0, SEEK_SET) != 0)
+        {
+            std::fclose(in);
+            error = "读取题目缓存 '" + luogu::compat::path_to_utf8(ndjson_path) + "' 失败";
+            return false;
+        }
     }
 
     // 4. 逐行扫描并筛选（统一用 Problem 结构承载题目）
@@ -678,7 +845,7 @@ bool luogu::select_problems(const ExportFilter &filter,
         // 快速预筛：原始文本上就确定不可能命中的行，跳过 JSON 解析
         if (!raw_may_match(std::string_view(line),
                            filter.difficulties, filter_tags, filter_tag_ids,
-                           filter.types))
+                           filter.types, pids_set, pid_ranges))
             continue;
 
         json data;
@@ -716,6 +883,13 @@ bool luogu::select_problems(const ExportFilter &filter,
 
             // 构造 Problem（标签名称、题面、样例、时空限制、多语言都在这里解析）
             problem::Problem p(data, &tag_cache.id_to_name);
+
+            // --pid：题号精确匹配（不区分大小写）；--pid-range：题号落在任一闭区间
+            if (!pids_set.empty() || !pid_ranges.empty())
+            {
+                if (!pid_matches(to_upper_ascii(p.pid), pids_set, pid_ranges))
+                    continue;
+            }
 
             // 标签：多个值取“且”
             if (!filter_tags.empty())
@@ -839,6 +1013,15 @@ std::string luogu::describe_filter(const ExportFilter &filter,
     const bool show_tags = (filter.show.size() >= 2 && filter.show[1] == '1');
 
     std::vector<std::string> conds;
+    if (!filter.pids.empty())
+        conds.push_back("题号为 " + join_strings(filter.pids, "、"));
+    if (!filter.pid_ranges.empty())
+    {
+        std::vector<std::string> rs;
+        for (const auto &r : filter.pid_ranges)
+            rs.push_back(r.first + "-" + r.second);
+        conds.push_back("题号范围为 " + join_strings(rs, " 或 "));
+    }
     if (!resolved_tags.empty())
         conds.push_back("标签包含 " + join_strings(resolved_tags, "、"));
     if (!filter.difficulties.empty())

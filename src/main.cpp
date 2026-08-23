@@ -36,6 +36,7 @@
 #include <cstring>
 #include <filesystem>
 #include <string>
+#include <utility>
 #include <vector>
 #include "luogu-export/crawler/crawler.h"
 #include "luogu-export/export/common.h"
@@ -93,6 +94,8 @@ enum
     OPT_FONT_TITLE_EN,
     OPT_NO_BILIBILI_LINK,
     OPT_COVER_TITLE,
+    OPT_PID,
+    OPT_PID_RANGE,
 };
 
 // 选项码 → 长选项名（用于报错信息）
@@ -133,6 +136,8 @@ inline std::string option_argument_hint(const std::string &token)
     if (token == "--set-font-title-zh-CN") return "字体名称或字体文件地址";
     if (token == "--set-font-title-en-US") return "字体名称或字体文件地址";
     if (token == "--set-cover-title") return "封面标题";
+    if (token == "--pid") return "题号（如 P1001，可多个，空格分隔或重复 --pid）";
+    if (token == "--pid-range") return "题号范围（如 P1001-P1010，可多组，空格分隔或重复 --pid-range）";
     return "";
 }
 
@@ -154,6 +159,14 @@ const char *kUsage =
     "      --difficulty <spec> Filter by difficulty: numbers 0-8, ranges like 1-4,\n"
     "                          separated by spaces or by repeating --difficulty (any match is enough)\n"
     "      --type <B|P>        Filter by problem type (repeatable; empty means all types)\n"
+    "      --pid <pid>...      Filter by problem id (repeatable or space separated).\n"
+    "                          Cannot be combined with --tag / --difficulty / --type;\n"
+    "                          each id must exist in the problem list cache\n"
+    "      --pid-range <a>-<b> Filter by inclusive problem id range (repeatable or space\n"
+    "                          separated; both endpoints included). Both endpoints must\n"
+    "                          exist in the problem list cache and belong to the same\n"
+    "                          problem set (e.g. P1001-P1010). May be combined with\n"
+    "                          --tag / --difficulty / --type\n"
     "      --lang <zh-CN|en>   Problem statement language (default: zh-CN)\n"
     "      --show <NN>         Show flags for -M only: first bit = difficulty, second bit = tags;\n"
     "                          1 shows, 0 hides (default: 11). Hiding tags only hides\n"
@@ -210,6 +223,14 @@ inline std::string to_lower_ascii(const std::string &s)
     std::string out = s;
     for (auto &c : out)
         c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return out;
+}
+
+inline std::string to_upper_ascii(const std::string &s)
+{
+    std::string out = s;
+    for (auto &c : out)
+        c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
     return out;
 }
 
@@ -381,6 +402,64 @@ inline bool parse_difficulty_spec(const std::string &spec, std::vector<int> &dif
     return true;
 }
 
+// 解析一组 --pid-range 规格 "<题号>-<题号>"（两端点均包含）。
+// 成功时把规范化（大写）的两端点写入 out 并返回 true；
+// 失败时返回 false，并把中文错误信息（含相关要求）写入 err。
+inline bool parse_pid_range_arg(const std::string &spec,
+                                std::pair<std::string, std::string> &out,
+                                std::string &err)
+{
+    const size_t dash = spec.find('-');
+    if (dash == std::string::npos)
+    {
+        err = "参数错误：'--pid-range' 的值 '" + spec +
+              "' 缺少 '-'；正确用法：--pid-range <题号>-<题号>"
+              "（如 P1001-P1010，两端点均包含）";
+        return false;
+    }
+    const std::string a = spec.substr(0, dash);
+    const std::string b = spec.substr(dash + 1);
+    if (a.empty() || b.empty() || b.find('-') != std::string::npos)
+    {
+        err = "参数错误：'--pid-range' 的值 '" + spec +
+              "' 不是合法的题号范围；正确用法：--pid-range <题号>-<题号>"
+              "（如 P1001-P1010，两端点均包含，且只含一个 '-'）";
+        return false;
+    }
+
+    std::string a_prefix, a_suffix, b_prefix, b_suffix;
+    unsigned long long a_num = 0, b_num = 0;
+    if (!luogu::parse_pid_parts(a, a_prefix, a_num, a_suffix))
+    {
+        err = "参数错误：'--pid-range' 的端点 '" + a +
+              "' 不是合法题号（应为 1 个或多个字母 + 数字，如 P1001）";
+        return false;
+    }
+    if (!luogu::parse_pid_parts(b, b_prefix, b_num, b_suffix))
+    {
+        err = "参数错误：'--pid-range' 的端点 '" + b +
+              "' 不是合法题号（应为 1 个或多个字母 + 数字，如 P1010）";
+        return false;
+    }
+    if (a_prefix != b_prefix)
+    {
+        err = "参数错误：'--pid-range' 的一组范围两端必须为同一题库的题目"
+              "（例如 P1001-P1010 或 B2000-B2010）；'" + spec +
+              "' 跨越了不同题库（" + a_prefix + " 题库与 " + b_prefix +
+              " 题库），不同题库请分成多组范围分别传入";
+        return false;
+    }
+    if (luogu::compare_pid_parts(a_num, a_suffix, b_num, b_suffix) > 0)
+    {
+        err = "参数错误：'--pid-range' 的范围左端点不能大于右端点（'" + spec +
+              "'）；正确用法：--pid-range <题号>-<题号>，两端点均包含且"
+              "左端点不超过右端点";
+        return false;
+    }
+    out = {to_upper_ascii(a), to_upper_ascii(b)};
+    return true;
+}
+
 // --tags：按官方分类（type）打印标签 ID 对照表
 inline bool print_tag_list()
 {
@@ -470,6 +549,8 @@ int main(int argc, char *argv[])
         {"set-font-title-en-US", required_argument, nullptr, OPT_FONT_TITLE_EN},
         {"no-bilibili-link",     no_argument,       nullptr, OPT_NO_BILIBILI_LINK},
         {"set-cover-title",      required_argument, nullptr, OPT_COVER_TITLE},
+        {"pid",                  required_argument, nullptr, OPT_PID},
+        {"pid-range",            required_argument, nullptr, OPT_PID_RANGE},
         {"help",       no_argument,       nullptr, 'h'},
         {nullptr,      0,                 nullptr, 0},
     };
@@ -617,6 +698,48 @@ int main(int argc, char *argv[])
             options.cover_title = t;
             break;
         }
+        case OPT_PID:
+        {
+            // 支持空格分隔的多个题号（如 --pid P1001 P1002）；空值视为参数缺失。
+            // getopt 只取一个参数，后续裸参数在下方统一并入 --pid
+            const std::vector<std::string> tokens =
+                split_whitespace(optarg ? optarg : "");
+            if (tokens.empty() || (optarg && optarg[0] == '-'))
+            {
+                printError("参数 '--pid' 后缺少题号；"
+                           "正确用法：--pid <题号>（如 P1001，可多个，"
+                           "空格分隔或重复 --pid）");
+                return 1;
+            }
+            for (const auto &tok : tokens)
+                options.filter.pids.push_back(tok);
+            break;
+        }
+        case OPT_PID_RANGE:
+        {
+            // 支持空格分隔的多组范围；空值视为参数缺失
+            const std::vector<std::string> tokens =
+                split_whitespace(optarg ? optarg : "");
+            if (tokens.empty() || (optarg && optarg[0] == '-'))
+            {
+                printError("参数 '--pid-range' 后缺少题号范围；"
+                           "正确用法：--pid-range <题号>-<题号>"
+                           "（如 P1001-P1010，可多组，空格分隔或重复 --pid-range）");
+                return 1;
+            }
+            for (const auto &tok : tokens)
+            {
+                std::pair<std::string, std::string> range;
+                std::string err;
+                if (!parse_pid_range_arg(tok, range, err))
+                {
+                    printError(err);
+                    return 1;
+                }
+                options.filter.pid_ranges.push_back(std::move(range));
+            }
+            break;
+        }
         case 'h':
             options.help = true;
             break;
@@ -704,16 +827,54 @@ int main(int argc, char *argv[])
             return 1;
         }
 
-        // -M/-L 模式下，剩余裸参数按难度解析；解析不了则当作 --tag 的后续值，
-        // 从而同时支持 "--difficulty 1 2 3" 与 "--tag 模拟 贪心" 两种空格分隔写法
-        for (int i = optind; i < arg_count; ++i)
+        // -M/-L 模式下剩余裸参数的处理：
+        // - 使用过 --pid 时按题号并入 --pid（支持 "--pid P1001 P1002"）；
+        // - 使用过 --pid-range 时按题号范围并入 --pid-range
+        //   （支持 "--pid-range P1001-P1010 P2000-P2010"）；
+        // - 否则保持原行为：按难度解析，解析不了则当作 --tag 的后续值
+        //   （支持 "--difficulty 1 2 3" 与 "--tag 模拟 贪心" 两种写法）
+        if (!options.filter.pids.empty())
         {
-            std::vector<int> tmp = options.filter.difficulties;
-            if (parse_difficulty_spec(arg_vector[i], tmp))
-                options.filter.difficulties = std::move(tmp);
-            else
-                options.filter.tags.push_back(arg_vector[i]);
+            for (int i = optind; i < arg_count; ++i)
+                options.filter.pids.push_back(arg_vector[i]);
         }
+        else if (!options.filter.pid_ranges.empty())
+        {
+            for (int i = optind; i < arg_count; ++i)
+            {
+                std::pair<std::string, std::string> range;
+                std::string err;
+                if (!parse_pid_range_arg(arg_vector[i], range, err))
+                {
+                    printError(err);
+                    return 1;
+                }
+                options.filter.pid_ranges.push_back(std::move(range));
+            }
+        }
+        else
+        {
+            for (int i = optind; i < arg_count; ++i)
+            {
+                std::vector<int> tmp = options.filter.difficulties;
+                if (parse_difficulty_spec(arg_vector[i], tmp))
+                    options.filter.difficulties = std::move(tmp);
+                else
+                    options.filter.tags.push_back(arg_vector[i]);
+            }
+        }
+    }
+
+    // --pid 不能与 --tag、--difficulty、--type 同时使用（参数填用错误）
+    if (!options.filter.pids.empty() &&
+        (!options.filter.tags.empty() ||
+         !options.filter.difficulties.empty() ||
+         !options.filter.types.empty()))
+    {
+        printError("参数错误：--pid 不能与 --tag、--difficulty、--type 同时使用；"
+                   "若需按题号与其他条件组合筛选，请改用 --pid-range"
+                   "（--pid-range 支持与上述参数同时使用）");
+        return 1;
     }
 
     if (!options.update && !options.markdown && !options.latex)
