@@ -20,7 +20,7 @@
   - `--set-font-cover-page` / `--set-font-body-zh-CN` / `--set-font-body-en-US` / `--set-font-body-codes` / `--set-font-title-zh-CN` / `--set-font-title-en-US`：分别设置封面标题、正文中文、正文西文（不含公式）、代码块、标题中文（含目录与页眉）、标题西文（含目录与页眉）的字体，参数既可填**系统已安装的字体名称**，也可填**字体文件地址**；
   - `--no-bilibili-link`：bilibili 视频 URL 输出为普通文本而非超链接（默认超链接）；
   - `--set-cover-title`：自定义封面标题（`-M` 下对应一级标题）。
-- **标签徽章字体自动选择**：题目标签（来源/年份/地区/特殊属性，以及未来可能展示的算法标签共用同一徽章字体）的默认字体按操作系统选择——**Windows / macOS 用思源黑体（Noto Sans CJK SC）**，**Linux 用文泉驿微米黑（WenQuanYi Micro Hei）**；导出时用 `\IfFontExistsTF` 在编译期检测字体是否安装，未安装时自动回退到正文 CJK 字体，避免编译报错。
+- **标签字体自动选择**：题目标签（来源/年份/地区/特殊属性，以及未来可能展示的算法标签共用同一徽章字体）的默认字体按操作系统选择——**Windows / macOS 用思源黑体（Noto Sans CJK SC）**，**Linux 用文泉驿微米黑（WenQuanYi Micro Hei）**；导出时用 `\IfFontExistsTF` 在编译期检测字体是否安装，未安装时自动回退到正文 CJK 字体，避免编译报错。
 - **跨平台兼容**：兼容 **Windows、macOS、Linux** 的主流现代版本：
   - Windows 下输出/缓存路径按 UTF-8（宽字符）处理，支持中文文件名（如 `--output 题册.tex`）与含中文用户名的缓存目录；
   - Windows 传统控制台自动启用 ANSI 转义解析，彩色与进度输出不乱码；
