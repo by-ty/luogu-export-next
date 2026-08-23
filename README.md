@@ -127,8 +127,6 @@ luogu-export -M --set-cover-title "洛谷竞赛题册（全量）"
 | `-U, --update` | 更新题目列表缓存（`latest.ndjson`）与标签缓存（`tags.json`） |
 | `-M, --markdown` | 筛选并导出 Markdown（默认输出 `problems.md`） |
 | `-L, --latex` | 筛选并导出 LaTeX（默认输出 `problems.tex`） |
-
-> `-M` 与 `-L` 不能同时使用；需要两种格式时请分两次执行。
 | `--tags` | 按官方分类打印标签 ID 对照表（可与 `-h` 组合） |
 | `--tag <name\|ID>...` | 按标签筛选；多个值可用空格分隔或重复 `--tag`，题目须包含全部标签；引号整体恰好等于已知标签名（如 `"NOIP 普及组"`）时按一个标签处理 |
 | `--difficulty <spec>` | 按难度筛选；支持 `0-8`、区间 `1-4`，多个用空格分隔或重复传入（任一命中即可） |
@@ -147,6 +145,8 @@ luogu-export -M --set-cover-title "洛谷竞赛题册（全量）"
 | `--no-bilibili-link` | 仅 `-L` 有效：bilibili 视频 URL 输出为普通文本而非超链接（默认超链接） |
 | `--set-cover-title <title>` | 设置封面标题（`-L`，默认 `luogu export`）或 Markdown 一级标题（`-M`，默认 `洛谷题目导出`） |
 | `-h, --help` | 显示帮助 |
+
+> `-M` 与 `-L` 不能同时使用；需要两种格式时请分两次执行。
 
 关于字体参数 `<font>` 的写法：
 
