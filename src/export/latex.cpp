@@ -2496,9 +2496,15 @@ void emit_table(const std::vector<std::string> &rows, std::string &out)
     }
 
     // 3) 标记“组合矩形”（\multicolumn 与 \multirow 叠加）覆盖的单元格：
-    //    其内部的横向分隔线也必须跳过，否则会穿过合并单元格
+    //    其内部的横向分隔线也必须跳过，否则会穿过合并单元格；
+    //    同时记录每个单元格所属矩形的左右列边界（渲染时用于去掉矩形
+    //    内部的列间竖线，只保留矩形外边界处的竖线）
     std::vector<std::vector<bool>> in_rect(row_count,
                                            std::vector<bool>(col_count, false));
+    std::vector<std::vector<long>> rect_left(row_count,
+                                             std::vector<long>(col_count, -1));
+    std::vector<std::vector<long>> rect_right(row_count,
+                                              std::vector<long>(col_count, -1));
     for (size_t r0 = 0; r0 < row_count; ++r0)
     {
         for (size_t c0 = 0; c0 < col_count; ++c0)
@@ -2507,8 +2513,16 @@ void emit_table(const std::vector<std::string> &rows, std::string &out)
                 hend[r0][c0] <= static_cast<long>(c0))
                 continue;
             for (long rr = static_cast<long>(r0); rr <= vend[r0][c0]; ++rr)
+            {
                 for (long cc = static_cast<long>(c0); cc <= hend[r0][c0]; ++cc)
-                    in_rect[static_cast<size_t>(rr)][static_cast<size_t>(cc)] = true;
+                {
+                    const size_t rri = static_cast<size_t>(rr);
+                    const size_t cci = static_cast<size_t>(cc);
+                    in_rect[rri][cci] = true;
+                    rect_left[rri][cci] = static_cast<long>(c0);
+                    rect_right[rri][cci] = hend[r0][c0];
+                }
+            }
         }
     }
 
@@ -2538,7 +2552,35 @@ void emit_table(const std::vector<std::string> &rows, std::string &out)
             if (c > 0)
                 out += " & ";
             if (cell == "^" || cell == "<")
+            {
+                // 组合矩形内部（非起始单元格）：上方 \multirow 会覆盖该单元格，
+                // 但 tabular 的列间竖线仍会穿过合并区域；用 \multicolumn{1}
+                // 重写本格的列规格，去掉矩形内部的竖线，只保留矩形左右
+                // 边界处的竖线，避免竖线出现在合并单元格中间。
+                // 注意 \multicolumn{1} 会删除本格列规格自带的竖线：首列删除
+                // 表格左侧外框，其余列删除右侧列间竖线。左侧竖线只由表格
+                // 第一列（无左邻列）自己补上；其余位置左侧竖线由左邻列右侧
+                // 的竖线负责绘制，补上会把同一条线画成双线。右侧竖线只在
+                // 右邻列不属于同一合并矩形（或本列已是末列）时补上。
+                if (in_rect[r][c] &&
+                    !(vend[r][c] > static_cast<long>(r) &&
+                      hend[r][c] > static_cast<long>(c)) &&
+                    rect_left[r][c] >= 0 && rect_right[r][c] >= 0)
+                {
+                    const bool right_same_rect =
+                        c + 1 < col_count && in_rect[r][c + 1] &&
+                        rect_left[r][c + 1] == rect_left[r][c] &&
+                        rect_right[r][c + 1] == rect_right[r][c];
+                    std::string mspec;
+                    if (c == 0)
+                        mspec += '|';
+                    mspec += col_types[c];
+                    if (c + 1 == col_count || !right_same_rect)
+                        mspec += '|';
+                    out += "\\multicolumn{1}{" + mspec + "}{}";
+                }
                 continue; // 纵向合并内部 / 合并失败：空单元格
+            }
             size_t vlen = 1;
             if (vend[r][c] >= 0)
                 vlen = static_cast<size_t>(vend[r][c]) - r + 1;

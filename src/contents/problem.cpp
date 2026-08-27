@@ -19,6 +19,8 @@
 // License for more details.
 
 // src/contents/problem.cpp
+#include <cctype>
+#include <string>
 #include <vector>
 #include <nlohmann/json.hpp>
 #include "luogu-export/contents/problem.h"
@@ -32,6 +34,73 @@ using problem::Problem;
 namespace
 {
 
+// 删除 ::anti-ai[...] 指令块（洛谷用它向 AI 隐藏题面内容，导出时应把整段
+// 内容连同指令名与方括号一起删除）。方括号允许嵌套；未闭合的块删除到
+// 字符串末尾；指令名不区分大小写，未跟 '[' 的指令名按普通文本保留。
+std::string strip_anti_ai(std::string s)
+{
+    static constexpr char kMarker[] = "::anti-ai";
+    static constexpr size_t kMarkerLen = sizeof(kMarker) - 1;
+    std::string out;
+    size_t i = 0;
+    while (i < s.size())
+    {
+        // 不区分大小写（仅 ASCII）查找指令名
+        size_t p = std::string::npos;
+        for (size_t q = i; q + kMarkerLen <= s.size(); ++q)
+        {
+            bool eq = true;
+            for (size_t k = 0; k < kMarkerLen; ++k)
+            {
+                if (std::tolower(static_cast<unsigned char>(s[q + k])) !=
+                    std::tolower(static_cast<unsigned char>(kMarker[k])))
+                {
+                    eq = false;
+                    break;
+                }
+            }
+            if (eq)
+            {
+                p = q;
+                break;
+            }
+        }
+        if (p == std::string::npos)
+        {
+            out += s.substr(i);
+            break;
+        }
+        out += s.substr(i, p - i);
+        size_t q = p + kMarkerLen;
+        if (q >= s.size() || s[q] != '[')
+        {
+            // 指令名后没有紧跟 '['：不是指令块，保留原文并继续向后查找
+            out += s.substr(p, q - p);
+            i = q;
+            continue;
+        }
+        // 找与 '[' 配对的 ']'（块内容里允许出现嵌套的方括号）
+        int depth = 1;
+        size_t r = q + 1;
+        while (r < s.size() && depth > 0)
+        {
+            if (s[r] == '[')
+                ++depth;
+            else if (s[r] == ']')
+                --depth;
+            ++r;
+        }
+        if (depth != 0)
+        {
+            // 未闭合：视为直到字符串末尾都处于块内，全部删除
+            i = s.size();
+            break;
+        }
+        i = r; // 整块（含 ']'）被删除
+    }
+    return out;
+}
+
 // 键存在但值为 null 时也返回缺省值（官方数据里 background/hint 等可能为 null）。
 // 同时过滤控制字符（\u0000 等）：fputs/fprintf("%s") 依赖 C 字符串终止符，
 // 含 NUL 的内容会被静默截断，且控制字符会破坏 LaTeX 编译
@@ -39,7 +108,8 @@ std::string get_string(const json &j, const char *key)
 {
     if (!j.contains(key) || !j[key].is_string())
         return "";
-    return luogu::compat::strip_control_chars(j[key].get<std::string>());
+    return luogu::compat::strip_control_chars(
+        strip_anti_ai(j[key].get<std::string>()));
 }
 
 int get_int(const json &j, const char *key, int def)
@@ -136,11 +206,16 @@ problem::Problem::Problem(const json &data,
                 if (v.is_number_integer()) memory.push_back(v.get<int>());
     }
 
-    // 多语言题面：只保留 en（zh-CN 与顶层字段重复）
+    // 多语言题面：只保留 en（zh-CN 与顶层字段重复）；
+    // 英文题面同样删除 ::anti-ai 指令块（-M / -L 的 --lang en
+    // 直接读取该对象的字符串字段）
     if (data.contains("translations") && data["translations"].is_object() &&
         data["translations"].contains("en") && data["translations"]["en"].is_object())
     {
         translations = data["translations"]["en"];
+        for (auto it = translations.begin(); it != translations.end(); ++it)
+            if (it.value().is_string())
+                it.value() = strip_anti_ai(it.value().get<std::string>());
     }
 }
 
