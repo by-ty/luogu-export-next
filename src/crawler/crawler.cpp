@@ -18,7 +18,7 @@
 // or FITNESS FOR A PARTICULAR PURPOSE. See the GNU Lesser General Public
 // License for more details.
 
-// src/cralwer/cralwer.cpp
+// src/crawler/crawler.cpp
 #include <string>
 #include <functional>
 #include <cctype>

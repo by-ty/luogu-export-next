@@ -18,7 +18,7 @@
 // or FITNESS FOR A PARTICULAR PURPOSE. See the GNU Lesser General Public
 // License for more details.
 
-// src/problem_info.cpp
+// src/util/problem_info.cpp
 #include "luogu-export/util/problem_info.h"
 #include "luogu-export/util/tag_cache.h"
 

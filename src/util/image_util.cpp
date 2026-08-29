@@ -18,7 +18,7 @@
 // or FITNESS FOR A PARTICULAR PURPOSE. See the GNU Lesser General Public
 // License for more details.
 
-// src/image_util.cpp
+// src/util/image_util.cpp
 #include <regex>
 #include <unordered_set>
 #include "luogu-export/util/image_util.h"

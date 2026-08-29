@@ -18,7 +18,7 @@
 // or FITNESS FOR A PARTICULAR PURPOSE. See the GNU Lesser General Public
 // License for more details.
 
-// src/latex.cpp
+// src/export/latex.cpp
 #include <algorithm>
 #include <cctype>
 #include <cstring>
@@ -35,6 +35,7 @@
 #include "luogu-export/crawler/crawler.h"
 #include "luogu-export/export/common.h"
 #include "luogu-export/export/latex.h"
+#include "luogu-export/export/latex_fonts.h"
 #include "luogu-export/util/compat.h"
 #include "luogu-export/util/problem_info.h"
 
@@ -1631,6 +1632,33 @@ std::string escape_latex(std::string s)
     return out;
 }
 
+// 去掉 $...$ 与 $$...$$ 数学片段，生成适合 PDF 书签的纯文本标题：
+// hyperref 无法把 unicode-math 的数学符号（\Umathchar 定义）转成书签
+// 字符串，含数学的题目标题须经 \texorpdfstring 提供纯文本备用串。
+std::string strip_math_for_bookmark(std::string s)
+{
+    std::string out;
+    size_t i = 0;
+    while (i < s.size())
+    {
+        if (s[i] == '$' && i + 1 < s.size() && s[i + 1] == '$')
+        {
+            const size_t close = s.find("$$", i + 2);
+            i = (close == std::string::npos) ? s.size() : close + 2;
+            continue;
+        }
+        if (s[i] == '$')
+        {
+            const size_t close = s.find('$', i + 1);
+            i = (close == std::string::npos) ? s.size() : close + 1;
+            continue;
+        }
+        out += s[i];
+        ++i;
+    }
+    return out;
+}
+
 // \includegraphics 的路径：转义空格，并把 '\' 归一化为 '/'（TeX 不认识
 // Windows 反斜杠路径；源路径已用 path_to_utf8 转成 UTF-8）
 std::string escape_path(std::string s)
@@ -2112,12 +2140,11 @@ std::string inline_to_latex_impl(const std::string &text, std::vector<std::strin
             if (usable.empty())
                 return std::string(); // xelatex 无法加载的格式，直接跳过
             const std::string path = escape_path(luogu::compat::path_to_utf8(usable));
-            return protect("\\href{" + escape_latex(link_url) + "}{"
-                           "\\IfFileExists{" + path + "}{"
-                           "{\\setbox0=\\hbox{\\includegraphics{" + path + "}}"
-                           "\\ifdim\\wd0>\\linewidth"
-                           "\\includegraphics[width=\\linewidth]{" + path + "}"
-                           "\\else\\includegraphics{" + path + "}\\fi}}"
+            // \noindent：图片单独成段时去掉段首缩进（约 2 个中文字宽），
+            // 否则宽度恰为 \linewidth 的图片会连同缩进一起超出右边界
+            return protect("\\noindent\\href{" + escape_latex(link_url) + "}{"
+                           "\\IfFileExists{" + path + "}"
+                           "{\\luogoincludegraphics{" + path + "}}"
                            "{\\mbox{}}}");
         });
     }
@@ -2145,11 +2172,10 @@ std::string inline_to_latex_impl(const std::string &text, std::vector<std::strin
             if (usable.empty())
                 return std::string();
             const std::string path = escape_path(luogu::compat::path_to_utf8(usable));
-            return protect("\\IfFileExists{" + path + "}{"
-                           "{\\setbox0=\\hbox{\\includegraphics{" + path + "}}"
-                           "\\ifdim\\wd0>\\linewidth"
-                           "\\includegraphics[width=\\linewidth]{" + path + "}"
-                           "\\else\\includegraphics{" + path + "}\\fi}}"
+            // \noindent：图片单独成段时去掉段首缩进（约 2 个中文字宽），
+            // 否则宽度恰为 \linewidth 的图片会连同缩进一起超出右边界
+            return protect("\\noindent\\IfFileExists{" + path + "}"
+                           "{\\luogoincludegraphics{" + path + "}}"
                            "{\\mbox{}}");
         });
     }
@@ -2997,9 +3023,22 @@ std::string latex::markdown_to_latex(const std::string &markdown)
                 static const char *kCmds[] = {"section*", "subsection*", "subsubsection*",
                                               "paragraph*", "subparagraph*"};
                 if (in_quote_like || n > 5)
+                {
                     out += "\\textbf{" + title + "}\n\n";
+                }
+                else if (n >= 2 && n <= 4)
+                {
+                    // Markdown 的 ## / ### / #### 对应 LaTeX 的 subsection /
+                    // subsubsection / paragraph：默认使用 ctex fontset 预设的
+                    // 黑体；\luogomarkdownheading 在用户指定 --set-font-title-*
+                    // 时优先切换为用户标题字体，保证该系列参数优先级最高。
+                    out += "\\" + std::string(kCmds[n - 1]) +
+                           "{{\\luogomarkdownheading " + title + "}}\n\n";
+                }
                 else
+                {
                     out += "\\" + std::string(kCmds[n - 1]) + "{" + title + "}\n\n";
+                }
                 ++i;
                 continue;
             }
@@ -3271,7 +3310,11 @@ std::string latex::problem_to_latex(const problem::Problem &p, const Options &op
     };
 
     std::string out;
-    out += "\\section{" + inline_to_latex(p.pid + " " + field("title", p.name)) + "}\n\n";
+    // 题目标题进入 PDF 书签与目录：unicode-math 的数学符号无法转成书签
+    // 字符串，用 \texorpdfstring 提供去数学的纯文本备用标题
+    const std::string section_title = p.pid + " " + field("title", p.name);
+    out += "\\section{\\texorpdfstring{" + inline_to_latex(section_title) + "}{" +
+           escape_latex(strip_math_for_bookmark(section_title)) + "}}\n\n";
 
     // 标签 / 时空限制
     out += "\\begin{center}\n\\begin{tabularx}{\\textwidth}{XX}\n";
@@ -3333,7 +3376,9 @@ std::string latex::problem_to_latex(const problem::Problem &p, const Options &op
 std::string latex::article_to_latex(const article::Article &a)
 {
     std::string out;
-    out += "\\section{" + inline_to_latex(a.title) + "}\n\n";
+    // 标题进入 PDF 书签：数学符号用 \texorpdfstring 提供纯文本备用串
+    out += "\\section{\\texorpdfstring{" + inline_to_latex(a.title) + "}{" +
+           escape_latex(strip_math_for_bookmark(a.title)) + "}}\n\n";
     if (!a.author_name.empty())
         out += "作者：" + escape_latex(a.author_name) + " \\\\\n\n";
     out += markdown_to_latex(a.content) + "\n";
@@ -3421,8 +3466,26 @@ bool latex::export_latex(const luogu::ExportFilter &filter,
     // openany：章节可在任意页开始，避免封面后的空页（book 默认章节
     // 从奇数页开始，\maketitle 之后紧跟 \chapter* 会留出一张空白页）
     std::fputs("\\documentclass[openany]{book}\n", out);
-    std::fputs("\\usepackage[UTF8]{ctex}\n", out);
+    // ctex fontset：Windows/macOS 在编译本程序时确定；Linux 在运行
+    // 阶段解析 /etc/os-release，Ubuntu 系列用 ubuntu，其他发行版用 fandol。
+    const std::string ctex_options = latex::ctex_package_options();
+    std::fprintf(out, "\\usepackage%s{ctex}\n", ctex_options.c_str());
     std::fputs("\\usepackage{graphicx}\n", out);
+    // 图片统一缩放：测量自然宽高，只在超过行宽/版心高时按比例缩小；
+    // 小图片保持原始尺寸，不放大。max width 与 max height 同时给出并由
+    // keepaspectratio 保证宽高比不变，避免超高或超宽图片溢出页面。
+    std::fputs("\\newcommand{\\luogoincludegraphics}[1]{%\n", out);
+    std::fputs("  \\setbox0=\\hbox{\\includegraphics{#1}}%\n", out);
+    std::fputs("  \\ifdim\\wd0>\\linewidth\n", out);
+    std::fputs("    \\includegraphics[width=\\linewidth,height=\\textheight,keepaspectratio]{#1}%\n", out);
+    std::fputs("  \\else\n", out);
+    std::fputs("    \\ifdim\\dimexpr\\ht0+\\dp0\\relax>\\textheight\n", out);
+    std::fputs("      \\includegraphics[width=\\linewidth,height=\\textheight,keepaspectratio]{#1}%\n", out);
+    std::fputs("    \\else\n", out);
+    std::fputs("      \\includegraphics{#1}%\n", out);
+    std::fputs("    \\fi\n", out);
+    std::fputs("  \\fi\n", out);
+    std::fputs("}\n", out);
     std::fputs("\\usepackage{titlesec}\n", out);
     std::fputs("\\usepackage{fancyhdr}\n", out);
     // --no-toc-links：目录条目不带跳转到题目的超链接（默认带超链接）
@@ -3430,11 +3493,24 @@ bool latex::export_latex(const luogu::ExportFilter &filter,
         std::fputs("\\usepackage[hidelinks]{hyperref}\n", out);
     else
         std::fputs("\\usepackage[linktoc=none,hidelinks]{hyperref}\n", out);
+    // bookmark 宏包在单次 xelatex 编译中也能写入 PDF 书签，确保「目录」
+    // 和每个题目的书签不依赖 .out 的多遍重跑；必须在 hyperref 之后加载。
+    std::fputs("\\usepackage{bookmark}\n", out);
     std::fputs("\\usepackage[normalem]{ulem}\n", out);
-    std::fputs("\\usepackage{amsmath,amssymb}\n", out);
+    std::fputs("\\usepackage{amsmath}\n", out);
     std::fputs("\\usepackage{mathtools}\n", out);
-    std::fputs("\\usepackage{bm}\n", out);
-    std::fputs("\\usepackage{mathrsfs}\n", out);
+    // unicode-math：数学字体全部改为可无限缩放的 OpenType 数学字体，
+    // 修复 mathrsfs（RSFS 字体只有固定字号）导致 \mathscr 字号被替换的问题。
+    // 兼容性：必须加载在 amsmath / mathtools 之后；不再加载 amssymb、
+    // mathrsfs（其符号与 \mathscr 由 unicode-math 提供）与 bm（bm 与
+    // unicode-math 不兼容，会报 Extended mathchar）；\bm / \boldsymbol
+    // 用 unicode-math 的粗斜体数学字母表 \symbfit 兼容替代。
+    std::fputs("\\usepackage{unicode-math}\n", out);
+    // 显式选择随 TeX Live / MacTeX / MiKTeX 分发的 OpenType 数学字体，
+    // 避免不同平台上 unicode-math 默认数学字体不一致。
+    std::fputs("\\setmathfont{Latin Modern Math}\n", out);
+    std::fputs("\\newcommand{\\bm}{\\symbfit}\n", out);
+    std::fputs("\\renewcommand{\\boldsymbol}{\\symbfit}\n", out);
     std::fputs("\\usepackage{xcolor}\n", out);
     std::fputs("\\usepackage{listings}\n", out);
     std::fputs("\\usepackage{cancel}\n", out);
@@ -3443,14 +3519,17 @@ bool latex::export_latex(const luogu::ExportFilter &filter,
     // 表格合并（洛谷的 ^ 向上合并 / < 向左合并）需要 \multirow
     std::fputs("\\usepackage{multirow}\n", out);
     std::fputs("\\geometry{margin=2cm}\n", out);
-        // 去掉所有章节序号（\section 等）：目录和正文都不显示数字
+    // book 默认 \headheight=12pt 略小于 ctex/unicode-math 标题所需的
+    // 12.03pt；显式给到 13pt，消除每一页的 fancyhdr 警告，正文版心基本不变。
+    std::fputs("\\setlength{\\headheight}{13pt}\n", out);
+    // 去掉所有章节序号（\section 等）：目录和正文都不显示数字
     std::fputs("\\setcounter{secnumdepth}{-1}\n", out);
 
     // 页眉：--toc-backlinks 时页码为跳回目录页的超链接（默认页码为普通文本）
     const std::string page_in_head =
         opt.toc_backlinks ? "\\hyperlink{luogotoc}{\\thepage}" : "\\thepage";
     // 标题字体（--set-font-title-zh-CN / --set-font-title-en-US）同样作用于
-    // 页眉处的题目标题；未设置时保持原来的 \normalfont
+    // 页眉处的题目标题；未指定时保持普通正文样式。
     std::string head_fonts = "\\normalfont";
     if (!opt.font_title_zh.empty())
         head_fonts += " \\luogotitlezh";
@@ -3464,21 +3543,26 @@ bool latex::export_latex(const luogu::ExportFilter &filter,
     std::fprintf(out, "\\fancyhead[LO]{\\nouppercase{%s \\rightmark}}\n", head_fonts.c_str());
     std::fprintf(out, "\\fancyhead[RO]{%s}\n", page_in_head.c_str());
 
-    // 标题字体：--set-font-title-zh-CN / --set-font-title-en-US 同时作用于
-    // 正文页的标题、目录页的标题与页眉处的标题。
-    // 中文字体开关（\newCJKfontfamily 定义）与西文字体开关相互独立：
-    // 未设置中文字体时保持原来的 CJK 字体；未设置西文字体时保持原来的 \ttfamily。
-    std::string title_font_zh =
+    // 标题字体分两套：
+    // 1) 题目大标题（\section）：中文跟随 --set-font-title-zh-CN；未指定时
+    //    保持普通正文 CJK 字体。西文直接跟随正文主字体，因此
+    //    --set-font-body-en-US 通过 \setmainfont 自动生效；不使用黑体。
+    // 2) 小节标题（\subsection / \subsubsection，对应固定小节和 Markdown
+    //    的 ## / ###）：中文默认使用 ctex 预设黑体 \heiti；用户指定标题
+    //    中西文字体时优先使用 --set-font-title-zh-CN / -en-US。
+    const std::string section_title_font_zh =
         opt.font_title_zh.empty() ? "" : "\\luogotitlezh";
-    std::string title_font_en =
-        opt.font_title_en.empty() ? "\\ttfamily" : "\\luogotitleen";
+    const std::string subsection_title_font_zh =
+        opt.font_title_zh.empty() ? "\\heiti" : "\\luogotitlezh";
+    const std::string subsection_title_font_en =
+        opt.font_title_en.empty() ? "" : "\\luogotitleen";
 
-    std::fprintf(out, "\\titleformat{\\section}\n{%s%s\\Large}\n{}\n{0em}{}\n",
-                 title_font_zh.c_str(), title_font_en.c_str());
+    std::fprintf(out, "\\titleformat{\\section}\n{%s\\Large}\n{}\n{0em}{}\n",
+                 section_title_font_zh.c_str());
     std::fprintf(out, "\\titleformat{\\subsection}\n{%s%s\\large}\n{}\n{0em}{}\n",
-                 title_font_zh.c_str(), title_font_en.c_str());
+                 subsection_title_font_zh.c_str(), subsection_title_font_en.c_str());
     std::fprintf(out, "\\titleformat{\\subsubsection}\n{%s%s\\color{gray}}\n{}\n{1em}{}\n",
-                 title_font_zh.c_str(), title_font_en.c_str());
+                 subsection_title_font_zh.c_str(), subsection_title_font_en.c_str());
 
     std::fputs("\\lstset{\n", out);
     std::fputs("    breaklines=true,\n", out);
@@ -3593,6 +3677,9 @@ bool latex::export_latex(const luogu::ExportFilter &filter,
     std::fputs("\\providecommand{\\argmax}{\\operatorname*{arg\\,max}}\n", out);
     std::fputs("\\providecommand{\\argmin}{\\operatorname*{arg\\,min}}\n", out);
     std::fputs("\\providecommand{\\ctg}{\\cot}\n", out);
+    // 部分洛谷题面使用 \bold2 / \bold{x} 表示粗体数学字符；LaTeX 标准
+    // 没有 \bold，补齐为 \mathbf 别名，避免编译时 Undefined control sequence。
+    std::fputs("\\providecommand{\\bold}[1]{\\ifmmode\\mathbf{#1}\\else\\textbf{#1}\\fi}\n", out);
     std::fputs("\\providecommand{\\lt}{<}\n", out);
     std::fputs("\\providecommand{\\gt}{>}\n", out);
     std::fputs("\\providecommand{\\Alpha}{\\mathrm{A}}\n", out);
@@ -3647,103 +3734,15 @@ bool latex::export_latex(const luogu::ExportFilter &filter,
         const std::string cover = opt.cover_title.empty() ? "luogu export" : opt.cover_title;
         std::string cover_latex = escape_latex(cover);
         if (!opt.font_cover.empty())
-            cover_latex = "{\\luogocoverfont " + cover_latex + "}";
+            cover_latex = "{\\luogocoverfontall " + cover_latex + "}";
         std::fprintf(out, "\\title{%s}\n\\author{luogu-export}\n\\date{\\today}\n",
                      cover_latex.c_str());
     }
 
-    // 字体设置：参数值已在 main 中规范化（字体文件地址转绝对路径并补全扩展名），
-    // 这里渲染成 fontspec 可接受的写法。
-    // - 字体名称：直接放在花括号里（转义 TeX 特殊字符；下划线按字面保留，
-    //   fontspec 按字面处理）；
-    // - 字体文件地址（含 '/'）：拆成 Path= + Extension= + 文件名三段，
-    //   这是 fontspec 加载字体文件最稳妥的写法（直接把绝对路径放进
-    //   花括号在新版 fontspec 中会解析失败）。
-    // 未设置时保持原代码中的字体：
-    //   正文中文 → ctex 默认；正文西文 → 默认（Latin Modern）；
-    //   代码块   → Consolas；标题/封面 → 不额外指定字体族。
-    auto font_arg = [](const std::string &s) {
-        auto esc = [](const std::string &t) {
-            std::string out;
-            out.reserve(t.size());
-            for (char c : t)
-            {
-                switch (c)
-                {
-                case '{': out += "\\{"; break;
-                case '}': out += "\\}"; break;
-                case '#': out += "\\#"; break;
-                case '%': out += "\\%"; break;
-                case '&': out += "\\&"; break;
-                case '^': out += "\\textasciicircum{}"; break;
-                case '~': out += "\\textasciitilde{}"; break;
-                case '$': out += "\\$"; break;
-                default: out += c;
-                }
-            }
-            return out;
-        };
-        std::string t = s;
-        std::replace(t.begin(), t.end(), '\\', '/');
-        if (t.find('/') == std::string::npos)
-            return "{" + esc(t) + "}"; // 字体名称
-        // 字体文件地址：Windows 下按 UTF-8 构造 path 并按 UTF-8 取回字符串
-        const std::filesystem::path p = luogu::compat::path_from_utf8(t);
-        std::string dir = luogu::compat::path_to_utf8(p.parent_path());
-        if (dir.empty())
-            dir = ".";
-        if (dir.back() != '/')
-            dir += "/";
-        std::string base = luogu::compat::path_to_utf8(p.filename());
-        const std::string ext = luogu::compat::path_to_utf8(p.extension());
-        if (ext.empty())
-            return "[Path={" + esc(dir) + "}]{./" + esc(base) + "}";
-        base = base.substr(0, base.size() - ext.size());
-        return "[Path={" + esc(dir) + "},Extension=" + esc(ext) + "]{" + esc(base) + "}";
-    };
-
-    if (!opt.font_body_en.empty())
-        std::fprintf(out, "\\setmainfont%s\n", font_arg(opt.font_body_en).c_str());
-    if (!opt.font_body_zh.empty())
-        std::fprintf(out, "\\setCJKmainfont%s\n", font_arg(opt.font_body_zh).c_str());
-    // 代码块字体（\ttfamily 族）：未指定时优先尝试 Consolas，字体不存在
-    // 则保持 fontspec 默认等宽字体（Latin Modern Mono），避免编译报错
-    // （macOS/Linux 的 TeX Live 通常没有 Consolas）
-    if (opt.font_code.empty())
-        std::fputs("\\IfFontExistsTF{Consolas}{\\setmonofont{Consolas}}{}\n", out);
-    else
-        std::fprintf(out, "\\setmonofont%s\n", font_arg(opt.font_code).c_str());
-    // CJK 等宽字体：未指定时优先尝试 SimHei，字体不存在则回退到正文
-    // 中文字体（不切换字体族），避免编译报错
-    std::fputs("\\IfFontExistsTF{SimHei}{\\setCJKmonofont{SimHei}}{}\n", out);
-    // 标签徽章字体：按操作系统选择默认字体——Windows / macOS 用思源黑体
-    // （Noto Sans CJK SC），Linux 用文泉驿微米黑（WenQuanYi Micro Hei）。
-    // 西文字体族与 CJK 字体族是两套独立机制，须分别定义再合成一个开关；
-    // 原代码在 \newfontfamily 里直接带 CJKFont= 键——该键属 xeCJK，新版
-    // fontspec 会报 "key 'fontspec-opentype/CJKFont' is unknown"。
-    // 用 \IfFontExistsTF 在编译期检测字体是否安装：未安装时回退到正文
-    // 字体（不切换任何字体族），避免编译报错。
-#if defined(_WIN32) || defined(__APPLE__)
-    const char *kTagBadgeFont = "Noto Sans CJK SC";
-#else
-    const char *kTagBadgeFont = "WenQuanYi Micro Hei";
-#endif
-    std::fprintf(out,
-                 "\\IfFontExistsTF{%s}\n"
-                 "  {\\newfontfamily{\\tagsfontswestern}{%s}%%\n"
-                 "   \\newCJKfontfamily{\\tagsfontscjk}{%s}}\n"
-                 "  {\\let\\tagsfontswestern\\relax\\let\\tagsfontscjk\\relax}\n"
-                 "\\newcommand{\\tagsfonts}{\\tagsfontswestern\\tagsfontscjk}\n",
-                 kTagBadgeFont, kTagBadgeFont, kTagBadgeFont);
-    if (!opt.font_cover.empty())
-        std::fprintf(out, "\\newfontfamily{\\luogocoverfont}%s\n",
-                     font_arg(opt.font_cover).c_str());
-    if (!opt.font_title_zh.empty())
-        std::fprintf(out, "\\newCJKfontfamily{\\luogotitlezh}%s\n",
-                     font_arg(opt.font_title_zh).c_str());
-    if (!opt.font_title_en.empty())
-        std::fprintf(out, "\\newfontfamily{\\luogotitleen}%s\n",
-                     font_arg(opt.font_title_en).c_str());
+    // 字体设置已集中到 latex_fonts.cpp：ctex fontset 预设负责默认中西文
+    // 正文/标题/代码 CJK 字体；本函数只负责在用户指定 --set-font-* 时覆盖，
+    // 以及为代码块西文设置 Consolas -> Menlo -> DejaVu Sans Mono 回退链。
+    latex::write_font_setup(out, opt);
 
     std::fputs("\\begin{document}\n\n", out);
     std::fputs("\\maketitle\n", out);
